@@ -55,7 +55,7 @@
     document.querySelectorAll(".view").forEach(function (el) {
       el.classList.toggle("active", el.dataset.view === route.view);
     });
-    document.getElementById("pageTitle").textContent = TITLES[route.view];
+    // 상단 타이틀은 "균이네 사자가족" 고정 (현재 위치는 아래 탭바가 보여줌)
     document.getElementById("backBtn").hidden = !(route.view === "game" || route.view === "player");
 
     document.querySelectorAll(".tabnav a").forEach(function (a) {
@@ -97,17 +97,13 @@
     );
   }
 
-  function rosterRow(p) {
-    var num = p.back_number != null ? "#" + p.back_number : "-";
-    var roleBits = [p.role, p.throws_bats].filter(Boolean).join(" · ");
+  function rosterCard(p) {
+    var num = p.back_number != null ? p.back_number : "-";
     return (
-      '<li><a href="#/player/' + p.id + '">' +
-      '<div class="roster-row' + (p.is_captain ? " captain" : "") + '">' +
-      '<span class="num-badge">' + num + "</span>" +
-      '<span><span class="rname">' + esc(p.name) + (p.is_captain ? " (주장)" : "") + "</span><br>" +
-      '<span class="rrole">' + esc(roleBits || p.position_detail || "") + "</span></span>" +
-      '<span class="chev">›</span>' +
-      "</div></a></li>"
+      '<a href="#/player/' + p.id + '" class="player-card' + (p.is_captain ? " captain" : "") + '">' +
+      '<span class="avatar">' + num + (p.is_captain ? '<span class="cap-badge">C</span>' : "") + "</span>" +
+      '<span class="pname">' + esc(p.name) + "</span>" +
+      "</a>"
     );
   }
 
@@ -161,7 +157,11 @@
 
   function heroCardHtml(g, hideDetailLink) {
     var badgeCls = "badge" + (g.status === "live" ? " live" : g.status === "scheduled" ? " outline" : "");
-    var watchable = g.game_date === todayStr() && (g.status === "scheduled" || g.status === "live");
+    var ourGameWatchable = g.game_date === todayStr() && (g.status === "scheduled" || g.status === "live");
+    var btvLabel = ourGameWatchable ? "▶ TVING에서 시청" : "▶ TVING에서 오늘 다른 경기 보기";
+    var btvNote = ourGameWatchable
+      ? "TVING이 KBO 경기 온라인 중계권을 갖고 있습니다. 방송 시청이 어려우면 위 실시간 진행상황을 참고하세요."
+      : "TVING에서는 삼성전 외 다른 구단 경기도 실시간으로 볼 수 있습니다.";
     return (
       '<div class="today-card">' +
       '<div class="today-head"><span class="' + badgeCls + '">' + (STATUS_LABEL[g.status] || g.status) + '</span>' +
@@ -177,10 +177,8 @@
         : "") +
       liveStateHtml(g) +
       linescoreHtml(g) +
-      (watchable
-        ? '<a class="btv-btn" href="' + TVING_URL + '" target="_blank" rel="noopener">▶ TVING에서 시청</a>' +
-          '<p class="btv-note">TVING이 KBO 경기 온라인 중계권을 갖고 있습니다. 방송 시청이 어려우면 위 실시간 진행상황을 참고하세요.</p>'
-        : "") +
+      '<a class="btv-btn" href="' + TVING_URL + '" target="_blank" rel="noopener">' + btvLabel + "</a>" +
+      '<p class="btv-note">' + btvNote + "</p>" +
       (hideDetailLink
         ? ""
         : '<a class="card-tap" href="#/game/' + g.id + '">' + (g.status === "finished" ? "선수별 기록 보기" : "경기 상세 보기") + " ›</a>") +
@@ -191,12 +189,15 @@
   function nextCardHtml(g) {
     var days = Math.round((new Date(g.game_date) - new Date(todayStr())) / 86400000);
     return (
-      '<a href="#/game/' + g.id + '" class="card next-card">' +
+      '<div class="card">' +
+      '<a href="#/game/' + g.id + '" class="next-card">' +
       "<div><div class=\"muted small\">다음 경기</div>" +
       '<div class="game-opp">vs ' + esc(g.opponent) + " (" + (g.is_home ? "홈" : "원정") + ")</div>" +
       '<div class="game-date">' + fmtDate(g.game_date) + (g.start_time ? " " + esc(g.start_time) : "") + "</div></div>" +
       '<div class="d-day">D-' + Math.max(days, 0) + "</div>" +
-      "</a>"
+      "</a>" +
+      '<a class="btv-btn small-btv" href="' + TVING_URL + '" target="_blank" rel="noopener">▶ TVING에서 오늘 경기 보기</a>' +
+      "</div>"
     );
   }
 
@@ -365,7 +366,7 @@
       var players = groups[key].sort(function (a, b) { return (a.back_number || 99) - (b.back_number || 99); });
       return (
         '<div class="pos-section card"><h2>' + POSITION_LABELS[key] + '</h2>' +
-        '<ul class="roster-list">' + players.map(rosterRow).join("") + "</ul></div>"
+        '<div class="roster-grid">' + players.map(rosterCard).join("") + "</div></div>"
       );
     }).join("");
 
@@ -466,6 +467,63 @@
       '<div class="card"><h2>최근 경기 기록</h2>' + recentHtml + "</div>";
   }
 
+  // ---------------------------------------------------------------- 득점 실시간 알림
+  // Web Notification API 기반. 앱(탭)이 열려서 30초마다 폴링되는 동안에만 동작한다 -
+  // 완전히 앱을 끈 상태에서도 오는 "진짜 푸시 알림"은 서버(발송용 백엔드)가 따로
+  // 필요해서 이번 버전에는 없다. 우선 앱 켜둔 상태에서의 실시간 알림부터 지원.
+  var lastKnownGameState = null;
+
+  function initNotifyBanner() {
+    var banner = document.getElementById("notifyBanner");
+    if (!banner) return;
+    if (!("Notification" in window) || Notification.permission !== "default") {
+      banner.hidden = true;
+      return;
+    }
+    banner.hidden = false;
+  }
+
+  var notifyBtn = document.getElementById("notifyBtn");
+  if (notifyBtn) {
+    notifyBtn.addEventListener("click", function () {
+      Notification.requestPermission().then(function () {
+        initNotifyBanner();
+      });
+    });
+  }
+
+  function checkScoreNotify(todayGame) {
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    if (!todayGame) { lastKnownGameState = null; return; }
+
+    var key = todayGame.game_date + ":" + todayGame.opponent;
+    var prev = lastKnownGameState && lastKnownGameState.key === key ? lastKnownGameState : null;
+
+    if (prev) {
+      if (
+        (prev.score_us !== todayGame.score_us || prev.score_opp !== todayGame.score_opp) &&
+        todayGame.score_us != null
+      ) {
+        new Notification("🦁 삼성 라이온즈", {
+          body: "삼성 " + todayGame.score_us + " : " + todayGame.score_opp + " " + todayGame.opponent +
+                (todayGame.status === "finished" ? " (경기 종료)" : ""),
+          icon: "icons/icon-192.png",
+          tag: "lions-score",
+        });
+      } else if (prev.status !== todayGame.status && todayGame.status === "live") {
+        new Notification("🦁 삼성 라이온즈", { body: "오늘 경기가 시작됐습니다!", icon: "icons/icon-192.png", tag: "lions-score" });
+      } else if (prev.status !== todayGame.status && todayGame.status === "finished") {
+        new Notification("🦁 삼성 라이온즈", {
+          body: "경기 종료: 삼성 " + todayGame.score_us + " : " + todayGame.score_opp + " " + todayGame.opponent,
+          icon: "icons/icon-192.png",
+          tag: "lions-score",
+        });
+      }
+    }
+
+    lastKnownGameState = { key: key, score_us: todayGame.score_us, score_opp: todayGame.score_opp, status: todayGame.status };
+  }
+
   // ---------------------------------------------------------------- data load
   function showError(msg) {
     var main = document.getElementById("main");
@@ -503,6 +561,9 @@
       playersById = {}; playersByName = {};
       DATA.players.forEach(function (p) { playersById[p.id] = p; playersByName[p.name] = p; });
 
+      var todayGame = DATA.games.find(function (g) { return g.game_date === todayStr(); });
+      checkScoreNotify(todayGame);
+
       clearError();
       renderRoute();
     } catch (e) {
@@ -516,6 +577,7 @@
   document.getElementById("refreshBtn").addEventListener("click", loadAll);
   window.addEventListener("hashchange", renderRoute);
 
+  initNotifyBanner();
   loadAll();
   setInterval(loadAll, 30000); // 경기 시간대엔 크롤러가 5분마다 갱신, 화면은 30초마다 재조회
 

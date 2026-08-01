@@ -153,6 +153,7 @@ main { flex: 1; padding: 14px; padding-bottom: 24px; display: flex; flex-directi
 
 .btv-btn { display: block; text-align: center; background: #fff; color: var(--navy-dark); font-weight: 700; font-size: 14px; padding: 12px; border-radius: 12px; margin-top: 4px; }
 .btv-btn:active { opacity: 0.85; }
+.btv-btn.small-btv { background: var(--navy); color: #fff; margin-top: 10px; font-size: 13px; padding: 10px; }
 .btv-note { font-size: 11px; color: rgba(255,255,255,0.55); margin: 8px 0 0; line-height: 1.4; }
 .card-tap { display: block; margin-top: 10px; text-align: center; font-size: 12px; color: rgba(255,255,255,0.7); }
 
@@ -222,27 +223,28 @@ table.standings.mini th, table.standings.mini td { padding: 6px 4px; }
 .cal-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; font-size: 11px; color: var(--muted); }
 .cal-legend .dot { display: inline-block; margin-right: 3px; vertical-align: middle; }
 
-/* roster */
+/* roster: 사진 대신 등번호 아바타 카드, 3열 그리드 (선수 사진은 저작권 문제로 사용하지 않음) */
 .pos-section { margin-bottom: 4px; }
 .pos-section h2 { padding: 4px 4px; }
-.roster-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.roster-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px;
-  border-radius: 12px;
-}
-.roster-row .num-badge {
-  width: 34px; height: 34px; border-radius: 50%;
-  background: var(--navy); color: #fff;
+.roster-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px 8px; }
+.player-card { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; }
+.player-card .avatar {
+  position: relative;
+  width: 56px; height: 56px; border-radius: 50%;
+  background: linear-gradient(160deg, var(--navy), var(--navy-dark));
+  color: #fff;
   display: flex; align-items: center; justify-content: center;
-  font-size: 13px; font-weight: 800; flex-shrink: 0;
+  font-size: 18px; font-weight: 800;
 }
-.roster-row .rname { font-size: 14px; font-weight: 700; }
-.roster-row .rrole { font-size: 12px; color: var(--muted); }
-.roster-row .chev { margin-left: auto; color: #c3c8d6; font-size: 18px; }
-.roster-row.captain .num-badge { background: var(--red); }
+.player-card.captain .avatar { background: linear-gradient(160deg, var(--red), #8f1520); }
+.player-card .cap-badge {
+  position: absolute; top: -4px; right: -4px;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--red); color: #fff; font-size: 10px; font-weight: 800;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid var(--card-bg);
+}
+.player-card .pname { font-size: 12px; font-weight: 700; }
 
 /* detail pages */
 .detail-hero { background: linear-gradient(160deg, var(--navy), var(--navy-dark)); color: #fff; border-radius: 16px; padding: 20px 16px; text-align: center; }
@@ -263,6 +265,10 @@ table.standings.mini th, table.standings.mini td { padding: 6px 4px; }
 .empty-note { color: var(--muted); font-size: 13px; text-align: center; padding: 18px 8px; }
 
 .error-box { background: #fdecec; color: #a11; border: 1px solid #f6c8c8; border-radius: 10px; padding: 10px 12px; font-size: 13px; }
+
+.notify-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; padding: 12px 14px; }
+.notify-btn-inline { background: var(--navy); color: #fff; border: none; border-radius: 999px; padding: 8px 14px; font-size: 12px; font-weight: 700; flex-shrink: 0; }
+.notify-btn-inline:active { opacity: 0.85; }
 
 /* 이닝별 스코어보드 */
 .linescore-wrap { overflow-x: auto; margin-top: 12px; }

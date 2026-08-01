@@ -100,6 +100,14 @@ def sb_upsert(table, rows, on_conflict, return_rows=False):
     return r.json() if return_rows else None
 
 
+def sb_delete(table, filter_query):
+    """filter_query 예: 'game_date=in.(2026-08-02,2026-08-03)'"""
+    url = f"{SUPABASE_URL}/rest/v1/{table}?{filter_query}"
+    r = requests.delete(url, headers=HEADERS_SB, timeout=20)
+    if r.status_code >= 300:
+        log(f"  ! {table} delete 실패 ({r.status_code}): {r.text[:300]}")
+
+
 # ---------------------------------------------------------------------------
 # 1) 팀 순위
 # ---------------------------------------------------------------------------
@@ -285,6 +293,172 @@ def check_today_cancelled():
     except Exception as e:
         log(f"  ! 일정표 확인 실패: {e}")
         return None
+
+
+# ---------------------------------------------------------------------------
+# 2-1b) 특정 연/월 전체 일정표에서 삼성 경기만 뽑아내기 (과거 결과 + 다가오는 일정
+#       동기화용). GetScheduleList는 조회 월 전체(1일부터)를 돌려준다.
+# ---------------------------------------------------------------------------
+def fetch_month_schedule(gyear, gmonth):
+    try:
+        headers = dict(HEADERS_WS)
+        headers["Referer"] = SCHEDULE_LIST_URL
+        r = requests.post(
+            WS_SCHEDULE_LIST_URL,
+            headers=headers,
+            data={
+                "leId": LEAGUE_ID, "srIdList": "0,9,6", "seasonId": str(gyear),
+                "gameMonth": f"{gmonth:02d}", "teamId": "",
+            },
+            timeout=15,
+        )
+        r.raise_for_status()
+        rows = r.json().get("rows") or []
+    except Exception as e:
+        log(f"  ! {gyear}-{gmonth:02d} 일정표 조회 실패: {e}")
+        return []
+
+    out = []
+    cur_date = None
+    for row in rows:
+        cells = row["row"]
+        day_cell = next((c for c in cells if c.get("Class") == "day"), None)
+        if day_cell and day_cell.get("Text"):
+            m = re.match(r"(\d{2})\.(\d{2})", day_cell["Text"])
+            if m:
+                cur_date = f"{gyear}-{m.group(1)}-{m.group(2)}"
+        play_cell = next((c for c in cells if c.get("Class") == "play"), None)
+        if not play_cell or not cur_date:
+            continue
+        text = play_cell.get("Text") or ""
+        if OUR_TEAM_ABBR not in text:
+            continue
+        teams = BeautifulSoup(text, "html.parser").find_all("span", recursive=False)
+        if len(teams) < 2:
+            continue
+        away_raw, home_raw = teams[0].get_text(strip=True), teams[-1].get_text(strip=True)
+        remark = (cells[-1].get("Text") or "").strip()
+        place = (cells[-2].get("Text") or "").strip() or None
+        time_cell = next((c for c in cells if c.get("Class") == "time"), None)
+        start_time = (
+            BeautifulSoup(time_cell["Text"], "html.parser").get_text(strip=True)
+            if time_cell and time_cell.get("Text") else None
+        )
+        out.append({
+            "game_date": cur_date, "away_raw": away_raw, "home_raw": home_raw,
+            "remark": remark, "place": place, "start_time": start_time,
+        })
+    return out
+
+
+def crawl_full_schedule():
+    """최근 지난 경기 결과 + 다가오는 일정을 실제 KBO 일정표 기준으로 통째로 다시 맞춘다.
+    (하루 2번 daily-refresh에서만 호출 - 무거운 작업이라 5분 폴링에서는 돌리지 않는다)
+    """
+    log("전체 일정 동기화 시작 (최근 결과 + 다가오는 일정)")
+    today = datetime.date.today()
+    today_iso = today.isoformat()
+
+    months = {(today.year, today.month)}
+    next_month_probe = today.replace(day=28) + datetime.timedelta(days=4)
+    months.add((next_month_probe.year, next_month_probe.month))
+    prev_month_probe = today.replace(day=1) - datetime.timedelta(days=1)
+    months.add((prev_month_probe.year, prev_month_probe.month))
+
+    all_games = []
+    for gyear, gmonth in months:
+        all_games.extend(fetch_month_schedule(gyear, gmonth))
+
+    window_start = (today - datetime.timedelta(days=7)).isoformat()
+    by_date = {
+        g["game_date"]: g for g in all_games
+        if window_start <= g["game_date"] and g["game_date"] != today_iso
+    }
+    if not by_date:
+        log("  - 동기화할 경기 없음")
+        return
+
+    rows_out = []
+    for game_date, g in sorted(by_date.items()):
+        is_home = g["home_raw"] == OUR_TEAM_ABBR
+        opponent_raw = g["away_raw"] if is_home else g["home_raw"]
+        opponent = TEAM_NAME_MAP.get(opponent_raw, opponent_raw)
+        remark = g["remark"]
+
+        row = {
+            "game_date": game_date, "opponent": opponent, "is_home": is_home,
+            "start_time": g["start_time"], "place": g["place"],
+        }
+
+        if "취소" in remark or "노게임" in remark:
+            row.update({"status": "cancelled", "cancel_reason": remark,
+                        "result": None, "score_us": None, "score_opp": None})
+        elif game_date < today_iso:
+            kbo_game_id = build_kbo_game_id(game_date, g["away_raw"], g["home_raw"])
+            row["kbo_game_id"] = kbo_game_id
+            sb_data = kbo_ws_post(WS_SCOREBOARD_URL, kbo_game_id, today.year) if kbo_game_id else None
+
+            score_us = score_opp = None
+            if sb_data:
+                table2 = grid_rows(sb_data.get("table2"))
+                table3 = grid_rows(sb_data.get("table3"))
+
+                def as_int(v):
+                    try:
+                        return int(v)
+                    except (TypeError, ValueError):
+                        return None
+
+                if len(table3) >= 2 and all(len(r) >= 4 for r in table3[:2]):
+                    away_rhe, home_rhe = table3[0], table3[1]
+                    away_score, home_score = as_int(away_rhe[0]), as_int(home_rhe[0])
+                    if away_score is not None and home_score is not None:
+                        score_us = home_score if is_home else away_score
+                        score_opp = away_score if is_home else home_score
+                    us_rhe, opp_rhe = (home_rhe, away_rhe) if is_home else (away_rhe, home_rhe)
+                    row["hits_us"], row["errors_us"], row["walks_us"] = (
+                        as_int(us_rhe[1]), as_int(us_rhe[2]), as_int(us_rhe[3])
+                    )
+                    row["hits_opp"], row["errors_opp"], row["walks_opp"] = (
+                        as_int(opp_rhe[1]), as_int(opp_rhe[2]), as_int(opp_rhe[3])
+                    )
+                if len(table2) >= 2:
+                    away_line = [c if c != "-" else None for c in table2[0]]
+                    home_line = [c if c != "-" else None for c in table2[1]]
+                    row["linescore_us"] = home_line if is_home else away_line
+                    row["linescore_opp"] = away_line if is_home else home_line
+                row["crowd_count"] = sb_data.get("CROWD_CN") or None
+                row["game_duration"] = sb_data.get("USE_TM") or None
+
+            status = "finished" if score_us is not None else "scheduled"
+            result = None
+            if status == "finished":
+                result = "win" if score_us > score_opp else ("loss" if score_us < score_opp else "draw")
+            row.update({"status": status, "result": result, "score_us": score_us, "score_opp": score_opp})
+        else:
+            row.update({"status": "scheduled", "result": None, "score_us": None, "score_opp": None})
+
+        rows_out.append(row)
+
+    # 스캔한 날짜 구간 전체(경기가 없는 휴식일 포함)의 기존 행을 지우고 새로 채워 넣는다.
+    # 매치된 날짜만 지우면, 실제로는 경기가 없어졌는데 예전에 잘못 저장된 행이
+    # 계속 남아있는 문제가 생긴다 (예: 원래 있던 mock 데이터의 휴식일 오류).
+    range_start = min(by_date.keys())
+    range_end = max(by_date.keys())
+    sb_delete(
+        "games",
+        f"game_date=gte.{range_start}&game_date=lte.{range_end}&game_date=neq.{today_iso}",
+    )
+
+    saved = sb_upsert("games", rows_out, on_conflict="game_date,opponent", return_rows=True)
+
+    if saved:
+        saved_by_date = {row["game_date"]: row for row in saved}
+        for row in rows_out:
+            if row.get("status") == "finished" and row.get("kbo_game_id"):
+                saved_row = saved_by_date.get(row["game_date"])
+                if saved_row:
+                    crawl_boxscore(row["kbo_game_id"], today.year, saved_row["id"])
 
 
 # ---------------------------------------------------------------------------
@@ -545,6 +719,10 @@ def crawl_boxscore(kbo_game_id, gyear, game_row_id):
 def main():
     crawl_standings()
     crawl_schedule_and_results()
+    # 월 전체 일정표를 다시 긁어오는 건 API 호출이 많아 무거우니, 5분마다 도는
+    # 라이브 폴링이 아니라 하루 2번 daily-refresh에서만 돌린다 (FULL_SYNC=1).
+    if os.environ.get("FULL_SYNC") == "1":
+        crawl_full_schedule()
     log("완료")
 
 
