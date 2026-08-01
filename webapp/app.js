@@ -406,9 +406,25 @@
       statsHtml = '<p class="empty-note">경기 종료 후 선수별 기록이 표시됩니다.</p>';
     }
 
+    var otherOnDate = DATA.otherGames.filter(function (o) { return o.game_date === g.game_date; });
+    var otherHtml = otherOnDate.length
+      ? '<div class="card"><h2>같은 날 다른 경기</h2><ul class="games-list">' +
+        otherOnDate.map(function (o) {
+          var scoreText = o.away_score == null ? "-" : o.away_score + " : " + o.home_score;
+          var label = o.state_text || STATUS_LABEL[o.status] || o.status;
+          return (
+            '<li><div class="game-row" style="padding:10px">' +
+            '<div class="game-left"><span class="game-opp">' + esc(o.away_team) + " vs " + esc(o.home_team) + "</span>" +
+            '<span class="game-date">' + esc(label) + "</span></div>" +
+            '<span class="game-score">' + scoreText + "</span></div></li>"
+          );
+        }).join("") + "</ul></div>"
+      : "";
+
     el.innerHTML =
       heroCardHtml(g, true) +
-      '<div class="card"><h2>선수별 기록</h2>' + statsHtml + "</div>";
+      '<div class="card"><h2>선수별 기록</h2>' + statsHtml + "</div>" +
+      otherHtml;
   }
 
   // ---------------------------------------------------------------- player detail

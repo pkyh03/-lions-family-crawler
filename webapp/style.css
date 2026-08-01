@@ -34,12 +34,14 @@ button { font-family: inherit; }
 }
 
 /* top bar + tab nav (둘 다 상단에 고정) */
+/* .app이 이미 flex 컬럼 컨테이너라 자식은 기본으로 꽉 늘어나야 하는데,
+   margin:auto가 있으면 flex item이 늘어나지 않고 내용물 크기로 줄어드는
+   버그가 있어 메뉴가 화면 왼쪽에 좁게 쪼그라들었다. width:100%로 명시해 고침. */
 .header-wrap {
   position: sticky;
   top: 0;
   z-index: 20;
-  max-width: 480px;
-  margin: 0 auto;
+  width: 100%;
 }
 
 .topbar {
