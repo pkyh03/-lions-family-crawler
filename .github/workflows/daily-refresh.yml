@@ -1,0 +1,26 @@
+name: Lions Daily Refresh
+
+on:
+  schedule:
+    # UTC 00:00, 09:00 = KST 09:00, 18:00 (경기 없는 시간대 순위/일정 갱신용)
+    - cron: "0 0,9 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r crawler/requirements.txt
+
+      - name: Run crawler
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python crawler/kbo_crawler.py

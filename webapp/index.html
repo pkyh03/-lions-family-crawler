@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>삼성 라이온즈 가족 대시보드</title>
+<meta name="theme-color" content="#0d2d6b" />
+<meta name="description" content="삼성 라이온즈 순위, 오늘 경기, 결과를 한눈에 보는 가족 대시보드" />
+
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="라이온즈" />
+
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div class="app">
+
+  <div class="header-wrap">
+    <header class="topbar">
+      <button id="backBtn" class="icon-btn" aria-label="뒤로" hidden>‹</button>
+      <div class="topbar-title">
+        <span class="logo-dot"></span>
+        <h1 id="pageTitle">홈</h1>
+      </div>
+      <button id="refreshBtn" class="icon-btn" aria-label="새로고침" title="새로고침">⟳</button>
+    </header>
+
+    <nav class="tabnav">
+      <a href="#/home" data-tab="home"><span class="nav-ico">🏠</span><span>홈</span></a>
+      <a href="#/schedule" data-tab="schedule"><span class="nav-ico">📅</span><span>일정</span></a>
+      <a href="#/standings" data-tab="standings"><span class="nav-ico">🏆</span><span>순위</span></a>
+      <a href="#/roster" data-tab="roster"><span class="nav-ico">👥</span><span>선수단</span></a>
+    </nav>
+  </div>
+
+  <main id="main">
+
+    <!-- 홈 -->
+    <section data-view="home" class="view">
+      <div id="homeToday"></div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>팀 순위</h2>
+          <a href="#/standings" class="link">전체보기 ›</a>
+        </div>
+        <div id="homeStandingsMini"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>다가오는 일정</h2>
+          <a href="#/schedule" class="link">캘린더 ›</a>
+        </div>
+        <ul id="homeUpcoming" class="games-list"></ul>
+      </div>
+
+      <div class="card">
+        <h2>직관 일정</h2>
+        <ul id="ticketList" class="ticket-list"></ul>
+      </div>
+    </section>
+
+    <!-- 일정(캘린더) -->
+    <section data-view="schedule" class="view">
+      <div class="card cal-card">
+        <div class="cal-nav">
+          <button id="calPrev" class="icon-btn small">‹</button>
+          <span id="calLabel" class="cal-label"></span>
+          <button id="calNext" class="icon-btn small">›</button>
+        </div>
+        <div class="cal-weekdays">
+          <span>일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span>토</span>
+        </div>
+        <div id="calGrid" class="cal-grid"></div>
+        <div class="cal-legend">
+          <span><i class="dot win"></i>승</span>
+          <span><i class="dot loss"></i>패</span>
+          <span><i class="dot draw"></i>무</span>
+          <span><i class="dot scheduled"></i>예정</span>
+          <span><i class="dot live"></i>LIVE</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 순위 -->
+    <section data-view="standings" class="view">
+      <div class="card">
+        <h2>팀 순위</h2>
+        <div class="table-wrap">
+          <table id="standingsTable" class="standings">
+            <thead>
+              <tr><th>순위</th><th>팀</th><th>경기</th><th>승</th><th>패</th><th>무</th><th>승률</th><th>게임차</th></tr>
+            </thead>
+            <tbody id="standingsBody"><tr><td colspan="8" class="loading">불러오는 중...</td></tr></tbody>
+          </table>
+        </div>
+        <p id="standingsUpdated" class="muted small"></p>
+      </div>
+    </section>
+
+    <!-- 선수단 -->
+    <section data-view="roster" class="view">
+      <div id="rosterGroups"></div>
+    </section>
+
+    <!-- 경기 상세 -->
+    <section data-view="game" class="view">
+      <div id="gameDetail"></div>
+    </section>
+
+    <!-- 선수 프로필 -->
+    <section data-view="player" class="view">
+      <div id="playerDetail"></div>
+    </section>
+
+  </main>
+
+</div>
+
+<script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

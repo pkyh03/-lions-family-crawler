@@ -1,0 +1,27 @@
+name: Lions Live Game Poll
+
+on:
+  schedule:
+    # UTC 08:00~14:59 = KST 17:00~23:59, 5분 간격
+    # (실제 실행은 GitHub 서버 상황에 따라 몇 분씩 밀릴 수 있습니다)
+    - cron: "*/5 8-14 * * *"
+  workflow_dispatch: {}   # 수동 실행 버튼 (Actions 탭에서 즉시 테스트 가능)
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r crawler/requirements.txt
+
+      - name: Run crawler
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python crawler/kbo_crawler.py
