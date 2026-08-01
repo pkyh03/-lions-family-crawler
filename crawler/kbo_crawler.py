@@ -108,6 +108,15 @@ def sb_delete(table, filter_query):
         log(f"  ! {table} delete 실패 ({r.status_code}): {r.text[:300]}")
 
 
+def sb_update(table, row_id, fields):
+    """PATCH으로 특정 id의 일부 컬럼만 갱신 (upsert와 달리 NOT NULL 컬럼을
+    전부 안 보내도 된다)"""
+    url = f"{SUPABASE_URL}/rest/v1/{table}?id=eq.{row_id}"
+    r = requests.patch(url, headers=HEADERS_SB, data=json.dumps(fields), timeout=20)
+    if r.status_code >= 300:
+        log(f"  ! {table} update 실패 ({r.status_code}): {r.text[:300]}")
+
+
 # ---------------------------------------------------------------------------
 # 1) 팀 순위
 # ---------------------------------------------------------------------------
@@ -458,7 +467,7 @@ def crawl_full_schedule():
             if row.get("status") == "finished" and row.get("kbo_game_id"):
                 saved_row = saved_by_date.get(row["game_date"])
                 if saved_row:
-                    crawl_boxscore(row["kbo_game_id"], today.year, saved_row["id"])
+                    crawl_boxscore(row["kbo_game_id"], today.year, saved_row["id"], row.get("is_home"))
 
 
 # ---------------------------------------------------------------------------
@@ -648,16 +657,16 @@ def crawl_schedule_and_results():
         game_row_id = saved[0]["id"] if saved else None
 
         if game_row_id and status == "finished" and kbo_game_id:
-            crawl_boxscore(kbo_game_id, today.year, game_row_id)
+            crawl_boxscore(kbo_game_id, today.year, game_row_id, is_home)
 
     except Exception as e:
         log(f"  ! 일정/결과 수집 실패: {e}")
 
 
 # ---------------------------------------------------------------------------
-# 3) 경기 종료 후 선수별 기록(박스스코어) 자동 수집
+# 3) 경기 종료 후 선수별 기록(박스스코어) 자동 수집 - 삼성 선수만
 # ---------------------------------------------------------------------------
-def crawl_boxscore(kbo_game_id, gyear, game_row_id):
+def crawl_boxscore(kbo_game_id, gyear, game_row_id, is_home=None):
     log("  선수별 기록(박스스코어) 수집 시작")
     data = kbo_ws_post(WS_BOXSCORE_URL, kbo_game_id, gyear)
     if not data:
@@ -667,7 +676,16 @@ def crawl_boxscore(kbo_game_id, gyear, game_row_id):
     rows_out = []
     sort_order = 1
 
-    for side in data.get("arrHitter", []) or []:
+    # arrHitter/arrPitcher는 [원정팀, 홈팀] 순서로 온다. is_home을 모르면(과거 호출
+    # 호환용) 상대팀까지 포함해 기존처럼 전부 저장한다.
+    hitter_sides = data.get("arrHitter", []) or []
+    pitcher_sides = data.get("arrPitcher", []) or []
+    if is_home is not None:
+        idx = 1 if is_home else 0
+        hitter_sides = hitter_sides[idx:idx + 1]
+        pitcher_sides = pitcher_sides[idx:idx + 1]
+
+    for side in hitter_sides:
         names = grid_rows(side.get("table1"))   # [타순, 포지션, 이름]
         stats = grid_rows(side.get("table3"))   # [타수, 안타, 타점, 득점, 타율]
         for name_row, stat_row in zip(names, stats):
@@ -688,7 +706,7 @@ def crawl_boxscore(kbo_game_id, gyear, game_row_id):
             })
             sort_order += 1
 
-    for side in data.get("arrPitcher", []) or []:
+    for side in pitcher_sides:
         rows = grid_rows(side.get("table"))  # 선수명,등판,결과,승,패,세,이닝,타자,투구수,타수,피안타,홈런,4사구,삼진,실점,자책,평균자책점
         for r in rows:
             if len(r) < 16:
@@ -714,6 +732,16 @@ def crawl_boxscore(kbo_game_id, gyear, game_row_id):
             sort_order += 1
 
     sb_upsert("game_player_stats", rows_out, on_conflict="game_id,sort_order")
+
+    # 결승타를 "오늘의 수훈선수" 표시용으로 games.highlight_note에 기록
+    etc_rows = grid_rows(data.get("tableEtc"))
+    highlight = None
+    for r in etc_rows:
+        if len(r) >= 2 and "결승타" in (r[0] or ""):
+            highlight = r[1].strip()
+            break
+    if highlight:
+        sb_update("games", game_row_id, {"highlight_note": highlight})
 
 
 def main():

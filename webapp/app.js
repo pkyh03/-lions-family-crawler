@@ -41,6 +41,14 @@
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
   }
+  function cancelIcon(reason) {
+    reason = reason || "";
+    if (reason.indexOf("폭염") !== -1) return "🌡️";
+    if (reason.indexOf("우천") !== -1) return "🌧️";
+    if (reason.indexOf("미세먼지") !== -1) return "😷";
+    if (reason.indexOf("노게임") !== -1) return "⛔";
+    return "🚫";
+  }
   // ---------------------------------------------------------------- router
   function parseHash() {
     var h = (location.hash || "#/home").replace(/^#\//, "");
@@ -99,9 +107,13 @@
 
   function rosterCard(p) {
     var num = p.back_number != null ? p.back_number : "-";
+    var avatarInner = p.photo_url
+      ? '<img src="' + esc(p.photo_url) + '" alt="' + esc(p.name) + '">'
+      : num;
     return (
       '<a href="#/player/' + p.id + '" class="player-card' + (p.is_captain ? " captain" : "") + '">' +
-      '<span class="avatar">' + num + (p.is_captain ? '<span class="cap-badge">C</span>' : "") + "</span>" +
+      '<span class="avatar' + (p.photo_url ? " has-photo" : "") + '">' + avatarInner +
+      (p.is_captain ? '<span class="cap-badge">C</span>' : "") + "</span>" +
       '<span class="pname">' + esc(p.name) + "</span>" +
       "</a>"
     );
@@ -157,11 +169,7 @@
 
   function heroCardHtml(g, hideDetailLink) {
     var badgeCls = "badge" + (g.status === "live" ? " live" : g.status === "scheduled" ? " outline" : "");
-    var ourGameWatchable = g.game_date === todayStr() && (g.status === "scheduled" || g.status === "live");
-    var btvLabel = ourGameWatchable ? "▶ TVING에서 시청" : "▶ TVING에서 오늘 다른 경기 보기";
-    var btvNote = ourGameWatchable
-      ? "TVING이 KBO 경기 온라인 중계권을 갖고 있습니다. 방송 시청이 어려우면 위 실시간 진행상황을 참고하세요."
-      : "TVING에서는 삼성전 외 다른 구단 경기도 실시간으로 볼 수 있습니다.";
+    var btvNote = "TVING이 KBO 경기 온라인 중계권을 갖고 있습니다. 방송 시청이 어려우면 위 실시간 진행상황을 참고하세요.";
     return (
       '<div class="today-card">' +
       '<div class="today-head"><span class="' + badgeCls + '">' + (STATUS_LABEL[g.status] || g.status) + '</span>' +
@@ -173,11 +181,11 @@
       "</div>" +
       '<div class="today-meta"><span>' + esc(g.place || "") + '</span><span>' + esc(g.start_time || "") + "</span></div>" +
       (g.status === "cancelled"
-        ? '<div class="cancel-note">🌧️ ' + esc(g.cancel_reason || "경기 취소") + "</div>"
+        ? '<div class="cancel-note">' + cancelIcon(g.cancel_reason) + " " + esc(g.cancel_reason || "경기 취소") + "</div>"
         : "") +
       liveStateHtml(g) +
       linescoreHtml(g) +
-      '<a class="btv-btn" href="' + TVING_URL + '" target="_blank" rel="noopener">' + btvLabel + "</a>" +
+      '<a class="btv-btn" href="' + TVING_URL + '" target="_blank" rel="noopener">📺 티빙 실시간 방송 보기</a>' +
       '<p class="btv-note">' + btvNote + "</p>" +
       (hideDetailLink
         ? ""
@@ -196,7 +204,7 @@
       '<div class="game-date">' + fmtDate(g.game_date) + (g.start_time ? " " + esc(g.start_time) : "") + "</div></div>" +
       '<div class="d-day">D-' + Math.max(days, 0) + "</div>" +
       "</a>" +
-      '<a class="btv-btn small-btv" href="' + TVING_URL + '" target="_blank" rel="noopener">▶ TVING에서 오늘 경기 보기</a>' +
+      '<a class="btv-btn small-btv" href="' + TVING_URL + '" target="_blank" rel="noopener">📺 티빙 실시간 방송 보기</a>' +
       "</div>"
     );
   }
@@ -422,8 +430,26 @@
         }).join("") + "</ul></div>"
       : "";
 
+    var mvpHtml = "";
+    if (g.status === "finished" && g.highlight_note) {
+      var m = g.highlight_note.match(/^([^(]+)\s*\(([^)]*)\)?/);
+      var mvpName = m ? m[1].trim() : g.highlight_note.trim();
+      var mvpDesc = m ? m[2].trim() : "";
+      var mvpPl = playersByName[mvpName];
+      var mvpNameHtml = mvpPl
+        ? '<a href="#/player/' + mvpPl.id + '">' + esc(mvpName) + "</a>"
+        : esc(mvpName);
+      mvpHtml =
+        '<div class="card mvp-card">' +
+        '<div class="mvp-label">🏅 오늘의 수훈선수 (결승타)</div>' +
+        '<div class="mvp-name">' + mvpNameHtml + "</div>" +
+        (mvpDesc ? '<div class="mvp-desc">' + esc(mvpDesc) + "</div>" : "") +
+        "</div>";
+    }
+
     el.innerHTML =
       heroCardHtml(g, true) +
+      mvpHtml +
       '<div class="card"><h2>선수별 기록</h2>' + statsHtml + "</div>" +
       otherHtml;
   }
@@ -454,13 +480,38 @@
         }).join("") + "</ul>"
       : '<p class="empty-note">최근 경기 기록이 없습니다.</p>';
 
+    var photoHtml = p.photo_url
+      ? '<img class="detail-photo" src="' + esc(p.photo_url) + '" alt="' + esc(p.name) + '">'
+      : '<div class="num-big">#' + (p.back_number != null ? p.back_number : "-") + "</div>";
+
+    var age = null;
+    if (p.birth_date) {
+      var by = parseInt(p.birth_date.slice(0, 4), 10);
+      if (!isNaN(by)) age = new Date().getFullYear() - by; // 만 나이(생일 미반영 근사치)
+    }
+
+    var profileRows = [];
+    if (p.back_number != null) profileRows.push(["등번호", "#" + p.back_number]);
+    if (p.birth_date) profileRows.push(["생년월일", p.birth_date + (age != null ? " (만 " + age + "세)" : "")]);
+    if (p.career) profileRows.push(["출신교", p.career]);
+    if (p.salary_display) profileRows.push(["연봉", p.salary_display]);
+
+    var profileHtml = profileRows.length
+      ? '<div class="card"><h2>프로필</h2><ul class="profile-list">' +
+        profileRows.map(function (r) {
+          return '<li><span class="pf-label">' + esc(r[0]) + '</span><span class="pf-value">' + esc(r[1]) + "</span></li>";
+        }).join("") + "</ul></div>"
+      : "";
+
     el.innerHTML =
       '<div class="detail-hero">' +
-      '<div class="num-big">#' + (p.back_number != null ? p.back_number : "-") + "</div>" +
+      (p.back_number != null ? '<div class="num-badge-sm">#' + p.back_number + "</div>" : "") +
+      photoHtml +
       '<div class="pname">' + esc(p.name) + (p.is_captain ? " (주장)" : "") + "</div>" +
       '<div class="psub">' + POSITION_LABELS[p.position_group] + "</div>" +
       '<div class="chip-row">' + chips + "</div>" +
       "</div>" +
+      profileHtml +
       '<div class="card"><h2>시즌 기록</h2>' +
       "<p>" + (p.season_stat_summary ? esc(p.season_stat_summary) : '<span class="muted">아직 등록된 시즌 기록이 없습니다.</span>') + "</p>" +
       "</div>" +
