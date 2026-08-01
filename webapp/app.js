@@ -17,7 +17,7 @@
   // 앱 링크(App Links/Universal Links)로 앱이 열리고, 없으면 웹에서 바로 시청할 수 있습니다.
   var TVING_URL = "https://www.tving.com/sports/kbo";
 
-  var DATA = { standings: [], games: [], tickets: [], players: [], stats: [] };
+  var DATA = { standings: [], games: [], tickets: [], players: [], stats: [], otherGames: [] };
   var gamesById = {};
   var statsByGame = {};
   var playersById = {};
@@ -172,6 +172,9 @@
       '<div class="team opp"><span class="score">' + (g.score_opp == null ? "-" : g.score_opp) + '</span><span class="team-name">' + esc(g.opponent) + "</span></div>" +
       "</div>" +
       '<div class="today-meta"><span>' + esc(g.place || "") + '</span><span>' + esc(g.start_time || "") + "</span></div>" +
+      (g.status === "cancelled"
+        ? '<div class="cancel-note">🌧️ ' + esc(g.cancel_reason || "경기 취소") + "</div>"
+        : "") +
       liveStateHtml(g) +
       linescoreHtml(g) +
       (watchable
@@ -222,7 +225,28 @@
     document.getElementById("homeUpcoming").innerHTML =
       upcoming.length ? upcoming.map(function (g) { return gameRow(g); }).join("") : '<li class="empty-note">예정된 경기가 없습니다</li>';
 
+    renderOtherGames();
     renderTickets();
+  }
+
+  function renderOtherGames() {
+    var today = todayStr();
+    var card = document.getElementById("otherGamesCard");
+    var rows = DATA.otherGames.filter(function (g) { return g.game_date === today; });
+    if (!rows.length) { card.hidden = true; return; }
+    card.hidden = false;
+
+    document.getElementById("otherGamesList").innerHTML = rows.map(function (g) {
+      var scoreText = g.away_score == null ? "-" : g.away_score + " : " + g.home_score;
+      var label = g.state_text || STATUS_LABEL[g.status] || g.status;
+      return (
+        '<li><div class="game-row" style="padding:10px">' +
+        '<div class="game-left"><span class="game-opp">' + esc(g.away_team) + " vs " + esc(g.home_team) + "</span>" +
+        '<span class="game-date">' + esc(label) + "</span></div>" +
+        '<span class="game-score">' + scoreText + "</span>" +
+        "</div></li>"
+      );
+    }).join("");
   }
 
   function renderTickets() {
@@ -445,6 +469,7 @@
         sb.from("ticket_events").select("*"),
         sb.from("players").select("*"),
         sb.from("game_player_stats").select("*"),
+        sb.from("other_games").select("*"),
       ]);
       var err = res.find(function (r) { return r.error; });
       if (err) throw err.error;
@@ -454,6 +479,7 @@
       DATA.tickets = res[2].data || [];
       DATA.players = res[3].data || [];
       DATA.stats = res[4].data || [];
+      DATA.otherGames = res[5].data || [];
 
       gamesById = {}; DATA.games.forEach(function (g) { gamesById[g.id] = g; });
       statsByGame = {};

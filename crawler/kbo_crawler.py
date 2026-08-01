@@ -69,6 +69,8 @@ OUR_TEAM_ABBR = "삼성"
 
 STANDINGS_URL = "https://www.koreabaseball.com/Record/TeamRank/TeamRankDaily.aspx"
 SCOREBOARD_URL = "https://www.koreabaseball.com/Schedule/ScoreBoard.aspx"
+SCHEDULE_LIST_URL = "https://www.koreabaseball.com/Schedule/Schedule.aspx"
+WS_SCHEDULE_LIST_URL = "https://www.koreabaseball.com/ws/Schedule.asmx/GetScheduleList"
 WS_SCOREBOARD_URL = "https://www.koreabaseball.com/ws/Schedule.asmx/GetScoreBoardScroll"
 WS_BOXSCORE_URL = "https://www.koreabaseball.com/ws/Schedule.asmx/GetBoxScoreScroll"
 LEAGUE_ID = "1"   # 정규시즌
@@ -186,7 +188,107 @@ def grid_rows(json_str):
 
 
 # ---------------------------------------------------------------------------
-# 2) 경기 일정 / 결과 (삼성 경기만, 오늘자) + 이닝별 스코어보드 + 실시간 진행상황
+# 2-0) 오늘 열리는 다른 팀들 경기 현황 (경쟁팀 파악용) - 삼성 경기 포함 전부 수집
+# ---------------------------------------------------------------------------
+def crawl_other_games(soup, today_iso):
+    rows_out = []
+    for block in soup.select(".smsScore"):
+        a = block.select_one(".leftTeam .teamT")
+        h = block.select_one(".rightTeam .teamT")
+        if not a or not h:
+            continue
+        away_txt, home_txt = a.get_text(strip=True), h.get_text(strip=True)
+
+        state_el = block.select_one(".flag span")
+        state_text = state_el.get_text(strip=True) if state_el else ""
+        if "취소" in state_text or "노게임" in state_text:
+            status = "cancelled"
+        elif "종료" in state_text:
+            status = "finished"
+        elif state_text == "경기전":
+            status = "scheduled"
+        else:
+            status = "live"
+
+        away_score_el = block.select_one(".leftTeam .score span")
+        home_score_el = block.select_one(".rightTeam .score span")
+        away_score_txt = away_score_el.get_text(strip=True) if away_score_el else ""
+        home_score_txt = home_score_el.get_text(strip=True) if home_score_el else ""
+
+        rows_out.append({
+            "game_date": today_iso,
+            "away_team": away_txt,
+            "home_team": home_txt,
+            "away_score": int(away_score_txt) if away_score_txt.isdigit() else None,
+            "home_score": int(home_score_txt) if home_score_txt.isdigit() else None,
+            "status": status,
+            "state_text": state_text or None,
+        })
+
+    sb_upsert("other_games", rows_out, on_conflict="game_date,away_team,home_team")
+
+
+# ---------------------------------------------------------------------------
+# 2-1) 스코어보드에 삼성 경기가 없을 때 - 월간 일정표(GetScheduleList)의
+#      "비고"란에서 우천취소/폭염취소 여부를 확인하는 보조 함수.
+#      Schedule.aspx 자체는 빈 뼈대만 서버에서 내려주고 실제 목록은
+#      /ws/Schedule.asmx/GetScheduleList 를 AJAX로 호출해서 채운다
+#      (표는 항상 "오늘"부터 시작하므로 첫 날짜 그룹만 본다).
+# ---------------------------------------------------------------------------
+def check_today_cancelled():
+    try:
+        today = datetime.date.today()
+        headers = dict(HEADERS_WS)
+        headers["Referer"] = SCHEDULE_LIST_URL
+        r = requests.post(
+            WS_SCHEDULE_LIST_URL,
+            headers=headers,
+            data={
+                "leId": LEAGUE_ID,
+                "srIdList": "0,9,6",  # 정규시즌
+                "seasonId": str(today.year),
+                "gameMonth": f"{today.month:02d}",
+                "teamId": "",
+            },
+            timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json()
+        rows = data.get("rows") or []
+        if not rows:
+            return None
+
+        first_day_span = int(rows[0]["row"][0].get("RowSpan") or 1)
+        today_rows = rows[:first_day_span]
+
+        for row in today_rows:
+            cells = row["row"]
+            play_cell = next((c for c in cells if c.get("Class") == "play"), None)
+            if not play_cell or OUR_TEAM_ABBR not in (play_cell.get("Text") or ""):
+                continue
+            teams = BeautifulSoup(play_cell["Text"], "html.parser").find_all("span", recursive=False)
+            if len(teams) < 2:
+                continue
+            away_raw, home_raw = teams[0].get_text(strip=True), teams[-1].get_text(strip=True)
+            remark = (cells[-1].get("Text") or "").strip()
+            place = (cells[-2].get("Text") or "").strip() or None
+            time_cell = next((c for c in cells if c.get("Class") == "time"), None)
+            start_time = (
+                BeautifulSoup(time_cell["Text"], "html.parser").get_text(strip=True)
+                if time_cell and time_cell.get("Text") else None
+            )
+            return {
+                "away_raw": away_raw, "home_raw": home_raw,
+                "remark": remark, "place": place, "start_time": start_time,
+            }
+        return None
+    except Exception as e:
+        log(f"  ! 일정표 확인 실패: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# 2-2) 경기 일정 / 결과 (삼성 경기, 오늘자) + 이닝별 스코어보드 + 실시간 진행상황
 # ---------------------------------------------------------------------------
 def crawl_schedule_and_results():
     log("일정/결과 수집 시작")
@@ -195,6 +297,8 @@ def crawl_schedule_and_results():
         res = requests.get(SCOREBOARD_URL, headers=HEADERS_WEB, timeout=15)
         res.raise_for_status()
         soup = BeautifulSoup(res.text, "html.parser")
+
+        crawl_other_games(soup, today.isoformat())
 
         target = away_raw = home_raw = None
         for block in soup.select(".smsScore"):
@@ -208,7 +312,33 @@ def crawl_schedule_and_results():
                 break
 
         if not target:
-            log("  - 오늘 삼성 경기 없음 (또는 우천/폭염 취소로 스코어보드에 미노출)")
+            # 스코어보드에 없으면 우천/폭염취소이거나 애초에 오늘 경기가 없는 것.
+            # 월간 일정표의 "비고"란으로 취소 여부를 한 번 더 확인한다.
+            info = check_today_cancelled()
+            if not info:
+                log("  - 오늘 삼성 경기 없음")
+                return
+            if "취소" not in info["remark"] and "노게임" not in info["remark"]:
+                log(f"  - 오늘 삼성 경기 없음 (일정표 비고: {info['remark'] or '-'})")
+                return
+
+            is_home = info["home_raw"] == OUR_TEAM_ABBR
+            opponent_raw = info["away_raw"] if is_home else info["home_raw"]
+            opponent = TEAM_NAME_MAP.get(opponent_raw, opponent_raw)
+            row = {
+                "game_date": today.isoformat(),
+                "opponent": opponent,
+                "is_home": is_home,
+                "start_time": info["start_time"],
+                "place": info["place"],
+                "status": "cancelled",
+                "cancel_reason": info["remark"],
+                "result": None,
+                "score_us": None,
+                "score_opp": None,
+            }
+            sb_upsert("games", [row], on_conflict="game_date,opponent")
+            log(f"  - 오늘 삼성 경기 취소 확인 ({info['remark']}) - vs {opponent}")
             return
 
         is_home = home_raw == OUR_TEAM_ABBR
@@ -288,6 +418,7 @@ def crawl_schedule_and_results():
             "start_time": start_time,
             "place": place_name,
             "status": status,
+            "cancel_reason": state_text if status == "cancelled" else None,
             "result": result,
             "score_us": score_us,
             "score_opp": score_opp,

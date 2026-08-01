@@ -138,6 +138,16 @@ main { flex: 1; padding: 14px; padding-bottom: 24px; display: flex; flex-directi
 .state { font-size: 12px; color: rgba(255,255,255,0.75); }
 
 .today-meta { display: flex; gap: 12px; font-size: 12px; color: rgba(255,255,255,0.7); margin-bottom: 12px; }
+.cancel-note {
+  background: rgba(255,209,102,0.15);
+  border: 1px solid rgba(255,209,102,0.4);
+  color: #ffe6a3;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 10px 12px;
+  border-radius: 10px;
+  margin-bottom: 4px;
+}
 
 .btv-btn { display: block; text-align: center; background: #fff; color: var(--navy-dark); font-weight: 700; font-size: 14px; padding: 12px; border-radius: 12px; margin-top: 4px; }
 .btv-btn:active { opacity: 0.85; }
