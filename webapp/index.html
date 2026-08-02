@@ -48,14 +48,14 @@
         <button id="notifyBtn" class="notify-btn-inline">알림 켜기</button>
       </div>
 
-      <div id="homeToday"></div>
+      <div id="homeToday"><div class="card sk-hero sk"></div></div>
 
       <div class="card">
         <div class="card-head">
           <h2>팀 순위</h2>
           <a href="#/standings" class="link">전체보기 ›</a>
         </div>
-        <div id="homeStandingsMini"></div>
+        <div id="homeStandingsMini"><div class="sk sk-row"></div><div class="sk sk-row"></div><div class="sk sk-row"></div></div>
       </div>
 
       <div class="card">
@@ -63,7 +63,7 @@
           <h2>다가오는 일정</h2>
           <a href="#/schedule" class="link">캘린더 ›</a>
         </div>
-        <ul id="homeUpcoming" class="games-list"></ul>
+        <ul id="homeUpcoming" class="games-list"><li class="sk sk-row"></li><li class="sk sk-row"></li></ul>
       </div>
 
       <div class="card" id="otherGamesCard" hidden>
@@ -74,6 +74,14 @@
       <div class="card">
         <h2>직관 일정</h2>
         <ul id="ticketList" class="ticket-list"></ul>
+      </div>
+
+      <div class="card yt-card">
+        <h2>🦁 삼성 라이온즈 영상</h2>
+        <div class="yt-btn-row">
+          <a id="ytHighlightBtn" class="yt-btn" target="_blank" rel="noopener">▶ 하이라이트</a>
+          <a id="ytDugoutBtn" class="yt-btn" target="_blank" rel="noopener">📷 덕아웃 1열</a>
+        </div>
       </div>
     </section>
 
@@ -108,7 +116,7 @@
             <thead>
               <tr><th>순위</th><th>팀</th><th>경기</th><th>승</th><th>패</th><th>무</th><th>승률</th><th>게임차</th></tr>
             </thead>
-            <tbody id="standingsBody"><tr><td colspan="8" class="loading">불러오는 중...</td></tr></tbody>
+            <tbody id="standingsBody"><tr><td colspan="8"><div class="sk sk-row"></div><div class="sk sk-row"></div><div class="sk sk-row"></div></td></tr></tbody>
           </table>
         </div>
         <p id="standingsUpdated" class="muted small"></p>
@@ -117,7 +125,16 @@
 
     <!-- 선수단 -->
     <section data-view="roster" class="view">
-      <div id="rosterGroups"></div>
+      <div id="rosterGroups">
+        <div class="pos-section card">
+          <h2>&nbsp;</h2>
+          <div class="sk-roster-grid">
+            <div class="sk-roster-item"><div class="sk sk-avatar"></div><div class="sk sk-line w60" style="margin:0 auto"></div></div>
+            <div class="sk-roster-item"><div class="sk sk-avatar"></div><div class="sk sk-line w60" style="margin:0 auto"></div></div>
+            <div class="sk-roster-item"><div class="sk sk-avatar"></div><div class="sk sk-line w60" style="margin:0 auto"></div></div>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- 경기 상세 -->

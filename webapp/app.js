@@ -17,6 +17,13 @@
   // 앱 링크(App Links/Universal Links)로 앱이 열리고, 없으면 웹에서 바로 시청할 수 있습니다.
   var TVING_URL = "https://www.tving.com/sports/kbo";
 
+  // 삼성 라이온즈 공식 유튜브 채널 주소를 확정할 수 없어(오탐 링크 방지),
+  // 유튜브 검색 결과로 안전하게 연결한다 - 하이라이트/덕아웃 1열 등은
+  // 검색어로 충분히 최신 컨텐츠에 닿을 수 있다.
+  function youtubeSearchUrl(query) {
+    return "https://www.youtube.com/results?search_query=" + encodeURIComponent(query);
+  }
+
   var DATA = { standings: [], games: [], tickets: [], players: [], stats: [], otherGames: [] };
   var gamesById = {};
   var statsByGame = {};
@@ -114,7 +121,7 @@
       '<a href="#/player/' + p.id + '" class="player-card' + (p.is_captain ? " captain" : "") + '">' +
       '<span class="avatar' + (p.photo_url ? " has-photo" : "") + '">' + avatarInner +
       (p.is_captain ? '<span class="cap-badge">C</span>' : "") + "</span>" +
-      '<span class="pname">' + esc(p.name) + "</span>" +
+      '<span class="pname">' + (p.back_number != null ? '<span class="bnum">#' + p.back_number + "</span> " : "") + esc(p.name) + "</span>" +
       "</a>"
     );
   }
@@ -187,6 +194,11 @@
       linescoreHtml(g) +
       '<a class="btv-btn" href="' + TVING_URL + '" target="_blank" rel="noopener">📺 티빙 실시간 방송 보기</a>' +
       '<p class="btv-note">' + btvNote + "</p>" +
+      (g.status === "finished"
+        ? '<a class="btv-btn small-btv" href="' +
+          youtubeSearchUrl("삼성 라이온즈 하이라이트 " + fmtDate(g.game_date) + " vs " + g.opponent) +
+          '" target="_blank" rel="noopener">▶ 유튜브 하이라이트 보기</a>'
+        : "") +
       (hideDetailLink
         ? ""
         : '<a class="card-tap" href="#/game/' + g.id + '">' + (g.status === "finished" ? "선수별 기록 보기" : "경기 상세 보기") + " ›</a>") +
@@ -241,7 +253,9 @@
   function renderOtherGames() {
     var today = todayStr();
     var card = document.getElementById("otherGamesCard");
-    var rows = DATA.otherGames.filter(function (g) { return g.game_date === today; });
+    var rows = DATA.otherGames.filter(function (g) {
+      return g.game_date === today && g.away_team !== "삼성 라이온즈" && g.home_team !== "삼성 라이온즈";
+    });
     if (!rows.length) { card.hidden = true; return; }
     card.hidden = false;
 
@@ -264,13 +278,15 @@
     if (!list) return;
     list.innerHTML = rows.length
       ? rows.map(function (t) {
-          return (
-            '<li><div class="game-row" style="padding:10px">' +
+          var tag = '<span class="tag ' + t.status + '">' + (TICKET_LABEL[t.status] || t.status) + "</span>";
+          var inner =
+            '<div class="game-row" style="padding:10px">' +
             '<div class="game-left"><span class="game-opp">' + esc(t.title) + '</span>' +
             '<span class="game-date">' + esc(t.event_date) + "</span></div>" +
-            '<span class="tag ' + t.status + '">' + (TICKET_LABEL[t.status] || t.status) + "</span>" +
-            "</div></li>"
-          );
+            tag + "</div>";
+          return t.booking_url
+            ? '<li><a href="' + esc(t.booking_url) + '" target="_blank" rel="noopener">' + inner + "</a></li>"
+            : "<li>" + inner + "</li>";
         }).join("")
       : '<li class="empty-note">등록된 일정이 없습니다</li>';
   }
@@ -415,7 +431,9 @@
       statsHtml = '<p class="empty-note">경기 종료 후 선수별 기록이 표시됩니다.</p>';
     }
 
-    var otherOnDate = DATA.otherGames.filter(function (o) { return o.game_date === g.game_date; });
+    var otherOnDate = DATA.otherGames.filter(function (o) {
+      return o.game_date === g.game_date && o.away_team !== "삼성 라이온즈" && o.home_team !== "삼성 라이온즈";
+    });
     var otherHtml = otherOnDate.length
       ? '<div class="card"><h2>같은 날 다른 경기</h2><ul class="games-list">' +
         otherOnDate.map(function (o) {
@@ -625,8 +643,67 @@
     }
   }
 
+  var ytHighlightBtn = document.getElementById("ytHighlightBtn");
+  if (ytHighlightBtn) ytHighlightBtn.href = youtubeSearchUrl("삼성 라이온즈 하이라이트");
+  var ytDugoutBtn = document.getElementById("ytDugoutBtn");
+  if (ytDugoutBtn) ytDugoutBtn.href = youtubeSearchUrl("삼성 라이온즈 덕아웃 1열");
+
   document.getElementById("refreshBtn").addEventListener("click", loadAll);
   window.addEventListener("hashchange", renderRoute);
+
+  // ---------------------------------------------------------------- pull-to-refresh
+  // main의 scrollY가 0인 상태에서 아래로 당길 때만 반응한다. 페이지 자체 스크롤과
+  // 충돌하지 않도록, 실제로 "당기는 중"으로 판정된 경우에만 touchmove를 막는다.
+  (function initPullToRefresh() {
+    var main = document.getElementById("main");
+    if (!main) return;
+    var indicator = document.createElement("div");
+    indicator.className = "ptr-indicator";
+    indicator.innerHTML = '<span class="ptr-label">↓ 당겨서 새로고침</span>';
+    main.insertBefore(indicator, main.firstChild);
+    var label = indicator.querySelector(".ptr-label");
+
+    var startY = null, pulling = false, refreshing = false;
+    var TRIGGER_PX = 46, MAX_PX = 80;
+
+    main.addEventListener("touchstart", function (e) {
+      if (refreshing || window.scrollY > 0) { startY = null; return; }
+      startY = e.touches[0].clientY;
+      pulling = false;
+    }, { passive: true });
+
+    main.addEventListener("touchmove", function (e) {
+      if (startY == null || refreshing) return;
+      var delta = e.touches[0].clientY - startY;
+      if (delta <= 0 || window.scrollY > 0) {
+        if (pulling) { pulling = false; indicator.style.height = "0px"; }
+        return;
+      }
+      pulling = true;
+      e.preventDefault();
+      var dist = Math.min(delta * 0.5, MAX_PX);
+      indicator.style.height = dist + "px";
+      label.textContent = dist >= TRIGGER_PX ? "↑ 놓으면 새로고침" : "↓ 당겨서 새로고침";
+    }, { passive: false });
+
+    main.addEventListener("touchend", function () {
+      if (pulling && parseFloat(indicator.style.height || "0") >= TRIGGER_PX) {
+        refreshing = true;
+        indicator.style.height = "44px";
+        indicator.innerHTML = '<span class="ptr-spinner"></span>';
+        loadAll().finally(function () {
+          refreshing = false;
+          indicator.style.height = "0px";
+          indicator.innerHTML = '<span class="ptr-label">↓ 당겨서 새로고침</span>';
+          label = indicator.querySelector(".ptr-label");
+        });
+      } else {
+        indicator.style.height = "0px";
+      }
+      startY = null;
+      pulling = false;
+    });
+  })();
 
   initNotifyBanner();
   loadAll();

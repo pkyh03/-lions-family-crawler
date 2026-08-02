@@ -25,6 +25,7 @@ import os
 import sys
 import re
 import json
+import time
 import datetime
 import requests
 from bs4 import BeautifulSoup
@@ -73,6 +74,8 @@ SCHEDULE_LIST_URL = "https://www.koreabaseball.com/Schedule/Schedule.aspx"
 WS_SCHEDULE_LIST_URL = "https://www.koreabaseball.com/ws/Schedule.asmx/GetScheduleList"
 WS_SCOREBOARD_URL = "https://www.koreabaseball.com/ws/Schedule.asmx/GetScoreBoardScroll"
 WS_BOXSCORE_URL = "https://www.koreabaseball.com/ws/Schedule.asmx/GetBoxScoreScroll"
+HITTER_DETAIL_URL = "https://www.koreabaseball.com/Record/Player/HitterDetail/Basic.aspx?playerId={}"
+PITCHER_DETAIL_URL = "https://www.koreabaseball.com/Record/Player/PitcherDetail/Basic.aspx?playerId={}"
 LEAGUE_ID = "1"   # 정규시즌
 SERIES_ID = "0"
 
@@ -98,6 +101,16 @@ def sb_upsert(table, rows, on_conflict, return_rows=False):
         return [] if return_rows else None
     log(f"  - {table} upsert 성공 ({len(rows)}건)")
     return r.json() if return_rows else None
+
+
+def sb_select(table, query):
+    """query 예: 'select=id,name&kbo_player_id=not.is.null'"""
+    url = f"{SUPABASE_URL}/rest/v1/{table}?{query}"
+    r = requests.get(url, headers=HEADERS_SB, timeout=20)
+    if r.status_code >= 300:
+        log(f"  ! {table} select 실패 ({r.status_code}): {r.text[:300]}")
+        return []
+    return r.json()
 
 
 def sb_delete(table, filter_query):
@@ -744,6 +757,206 @@ def crawl_boxscore(kbo_game_id, gyear, game_row_id, is_home=None):
         sb_update("games", game_row_id, {"highlight_note": highlight})
 
 
+# ---------------------------------------------------------------------------
+# 4) 선수별 시즌 기록 (KBO 기록실 개인 상세 페이지) - 하루 1~2번만 갱신
+# ---------------------------------------------------------------------------
+def parse_first_data_row(table):
+    """KBO 기록실 tbl-type02 표의 첫 tbody tr 셀 텍스트 리스트를 반환 (없으면 None)"""
+    if not table:
+        return None
+    tr = table.select_one("tbody tr")
+    if not tr:
+        return None
+    cells = [td.get_text(strip=True) for td in tr.select("td")]
+    return cells or None
+
+
+def fetch_player_season_stat(kbo_player_id, is_pitcher):
+    url = (PITCHER_DETAIL_URL if is_pitcher else HITTER_DETAIL_URL).format(kbo_player_id)
+    res = requests.get(url, headers=HEADERS_WEB, timeout=15)
+    res.raise_for_status()
+    soup = BeautifulSoup(res.text, "html.parser")
+
+    # 선수 상세 페이지의 "OOOO 성적" 표 2개(기본기록/추가기록)는 div.player_records
+    # 안에서 "최근 10경기" 표들보다 앞에 나오는 첫 두 개의 table.tbl.tt다.
+    tables = soup.select("div.player_records table.tbl.tt")
+    if len(tables) < 2:
+        return None
+    main_cells = parse_first_data_row(tables[0])
+    extra_cells = parse_first_data_row(tables[1])
+    if not main_cells:
+        return None
+
+    if is_pitcher:
+        # 팀명,ERA,G,CG,SHO,W,L,SV,HLD,WPCT,TBF,NP,IP,H,2B,3B,HR
+        if len(main_cells) < 9:
+            return None
+        era, g, _cg, _sho, w, l, sv, hld = main_cells[1:9]
+        return f"{g}경기 {w}승 {l}패 {sv}세이브 {hld}홀드 · 평균자책점 {era}"
+
+    # 팀명,AVG,G,PA,AB,R,H,2B,3B,HR,TB,RBI,SB,CS,SAC,SF
+    if len(main_cells) < 12:
+        return None
+    avg, g, _pa, _ab, r, h, _2b, _3b, hr, _tb, rbi = main_cells[1:12]
+    ops = extra_cells[10] if extra_cells and len(extra_cells) > 10 else None
+    summary = f"{g}경기 타율 {avg} {hr}홈런 {rbi}타점 {r}득점 {h}안타"
+    if ops:
+        summary += f" · OPS {ops}"
+    return summary
+
+
+def crawl_season_stats():
+    log("선수 시즌 기록 수집 시작")
+    players = sb_select("players", "select=id,name,position_group,kbo_player_id&kbo_player_id=not.is.null")
+    if not players:
+        log("  - kbo_player_id가 등록된 선수 없음")
+        return
+
+    updated = 0
+    for p in players:
+        try:
+            summary = fetch_player_season_stat(p["kbo_player_id"], p.get("position_group") == "pitcher")
+            if summary:
+                sb_update("players", p["id"], {"season_stat_summary": summary})
+                updated += 1
+        except Exception as e:
+            log(f"  ! {p.get('name')} 시즌 기록 조회 실패: {e}")
+        time.sleep(0.3)  # KBO 서버에 과도한 연속 요청을 피하기 위한 최소 간격
+
+    log(f"  - 선수 시즌 기록 {updated}/{len(players)}명 갱신 완료")
+
+
+# ---------------------------------------------------------------------------
+# 5) 삼성 제외 전체 팀 경기 일정/결과 (일정 상세의 "같은 날 다른 경기"용)
+#    GetScheduleList의 play 셀은 경기가 끝난 카드면 <em><span class="win/lose/same">
+#    형태로 스코어까지 이미 포함해서 내려주므로, 팀별 스코어보드를 따로 호출할
+#    필요 없이 이 한 번의 월간 일정 조회로 지난 결과 + 다가오는 일정을 모두 얻는다.
+# ---------------------------------------------------------------------------
+def parse_play_cell(html_text):
+    if not html_text:
+        return None
+    frag = BeautifulSoup(html_text, "html.parser")
+    team_spans = frag.find_all("span", recursive=False)
+    if len(team_spans) < 2:
+        return None
+    away_raw, home_raw = team_spans[0].get_text(strip=True), team_spans[-1].get_text(strip=True)
+
+    away_score = home_score = None
+    em = frag.find("em")
+    if em:
+        score_spans = em.find_all("span")
+        if len(score_spans) >= 2:
+            a_txt, h_txt = score_spans[0].get_text(strip=True), score_spans[-1].get_text(strip=True)
+            away_score = int(a_txt) if a_txt.isdigit() else None
+            home_score = int(h_txt) if h_txt.isdigit() else None
+
+    return {"away_raw": away_raw, "home_raw": home_raw, "away_score": away_score, "home_score": home_score}
+
+
+def fetch_month_schedule_all(gyear, gmonth):
+    """해당 연/월의 전체 팀 경기(삼성 포함)를 그대로 반환. crawl_full_schedule()의
+    fetch_month_schedule()과 같은 GetScheduleList 응답을 재사용하되, 팀 필터링 없이
+    스코어까지 함께 파싱한다."""
+    try:
+        headers = dict(HEADERS_WS)
+        headers["Referer"] = SCHEDULE_LIST_URL
+        r = requests.post(
+            WS_SCHEDULE_LIST_URL,
+            headers=headers,
+            data={
+                "leId": LEAGUE_ID, "srIdList": "0,9,6", "seasonId": str(gyear),
+                "gameMonth": f"{gmonth:02d}", "teamId": "",
+            },
+            timeout=15,
+        )
+        r.raise_for_status()
+        rows = r.json().get("rows") or []
+    except Exception as e:
+        log(f"  ! {gyear}-{gmonth:02d} 전체 일정표 조회 실패: {e}")
+        return []
+
+    out = []
+    cur_date = None
+    for row in rows:
+        cells = row["row"]
+        day_cell = next((c for c in cells if c.get("Class") == "day"), None)
+        if day_cell and day_cell.get("Text"):
+            m = re.match(r"(\d{2})\.(\d{2})", day_cell["Text"])
+            if m:
+                cur_date = f"{gyear}-{m.group(1)}-{m.group(2)}"
+        play_cell = next((c for c in cells if c.get("Class") == "play"), None)
+        if not play_cell or not cur_date:
+            continue
+        parsed = parse_play_cell(play_cell.get("Text"))
+        if not parsed:
+            continue
+        remark = (cells[-1].get("Text") or "").strip()
+        time_cell = next((c for c in cells if c.get("Class") == "time"), None)
+        start_time = (
+            BeautifulSoup(time_cell["Text"], "html.parser").get_text(strip=True)
+            if time_cell and time_cell.get("Text") else None
+        )
+        out.append({"game_date": cur_date, "remark": remark, "start_time": start_time, **parsed})
+    return out
+
+
+def crawl_full_other_games():
+    """삼성 경기는 games 테이블에서 이미 상세히 다루므로, 여기서는 나머지 팀들의
+    경기만 지난 결과(과거)/다가오는 일정(미래) 구간으로 other_games에 채워 넣는다."""
+    log("전체 팀(삼성 제외) 일정/결과 동기화 시작")
+    today = datetime.date.today()
+    today_iso = today.isoformat()
+
+    months = {(today.year, today.month)}
+    next_month_probe = today.replace(day=28) + datetime.timedelta(days=4)
+    months.add((next_month_probe.year, next_month_probe.month))
+    prev_month_probe = today.replace(day=1) - datetime.timedelta(days=1)
+    months.add((prev_month_probe.year, prev_month_probe.month))
+
+    all_games = []
+    for gyear, gmonth in months:
+        all_games.extend(fetch_month_schedule_all(gyear, gmonth))
+
+    window_start = (today - datetime.timedelta(days=14)).isoformat()
+    window_end = (today + datetime.timedelta(days=30)).isoformat()
+    filtered = [
+        g for g in all_games
+        if window_start <= g["game_date"] <= window_end
+        and g["game_date"] != today_iso
+        and OUR_TEAM_ABBR not in (g["away_raw"], g["home_raw"])
+    ]
+    if not filtered:
+        log("  - 동기화할 타팀 경기 없음")
+        return
+
+    rows_out = []
+    for g in filtered:
+        away_team = TEAM_NAME_MAP.get(g["away_raw"], g["away_raw"])
+        home_team = TEAM_NAME_MAP.get(g["home_raw"], g["home_raw"])
+        remark = g["remark"]
+        if "취소" in remark or "노게임" in remark:
+            status, state_text = "cancelled", remark
+        elif g["away_score"] is not None and g["home_score"] is not None:
+            status, state_text = "finished", "종료"
+        elif g["game_date"] < today_iso:
+            status, state_text = "finished", "종료"
+        else:
+            status, state_text = "scheduled", (g["start_time"] or "경기 예정")
+        rows_out.append({
+            "game_date": g["game_date"], "away_team": away_team, "home_team": home_team,
+            "away_score": g["away_score"], "home_score": g["home_score"],
+            "status": status, "state_text": state_text,
+        })
+
+    range_start = min(g["game_date"] for g in filtered)
+    range_end = max(g["game_date"] for g in filtered)
+    sb_delete(
+        "other_games",
+        f"game_date=gte.{range_start}&game_date=lte.{range_end}&game_date=neq.{today_iso}",
+    )
+    sb_upsert("other_games", rows_out, on_conflict="game_date,away_team,home_team")
+
+
 def main():
     crawl_standings()
     crawl_schedule_and_results()
@@ -751,6 +964,8 @@ def main():
     # 라이브 폴링이 아니라 하루 2번 daily-refresh에서만 돌린다 (FULL_SYNC=1).
     if os.environ.get("FULL_SYNC") == "1":
         crawl_full_schedule()
+        crawl_full_other_games()
+        crawl_season_stats()
     log("완료")
 
 

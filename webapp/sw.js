@@ -1,4 +1,4 @@
-const CACHE_NAME = "lions-dashboard-v3";
+const CACHE_NAME = "lions-dashboard-v4";
 const SHELL = [
   "./",
   "./index.html",
