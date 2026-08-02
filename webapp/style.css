@@ -318,12 +318,16 @@ table.standings.mini th, table.standings.mini td { padding: 6px 4px; }
 .mvp-name a { text-decoration: underline; }
 .mvp-desc { font-size: 12px; color: #5c3f00; margin-top: 4px; }
 
-.yt-btn-row { display: flex; gap: 8px; }
-.yt-btn {
-  flex: 1; text-align: center; background: #eef1f7; color: var(--text);
-  font-weight: 700; font-size: 13px; padding: 12px 8px; border-radius: 12px;
+/* 홈 화면 상단, 히어로 카드 바로 아래 - 항상 눈에 띄고 바로 누를 수 있는 위치 */
+.yt-quickrow { display: flex; gap: 8px; }
+.yt-pill {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
+  background: var(--card-bg); border: 1px solid var(--border); color: var(--text);
+  font-weight: 700; font-size: 13px; padding: 13px 8px; border-radius: 14px;
+  box-shadow: 0 1px 3px rgba(20,30,60,0.06);
 }
-.yt-btn:active { opacity: 0.8; }
+.yt-pill-ico { font-size: 15px; }
+.yt-pill:active { opacity: 0.75; }
 
 .notify-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; padding: 12px 14px; }
 .notify-btn-inline { background: var(--navy); color: #fff; border: none; border-radius: 999px; padding: 8px 14px; font-size: 12px; font-weight: 700; flex-shrink: 0; }
@@ -407,6 +411,6 @@ table.linescore td.sep { border-left: 1px solid rgba(255,255,255,0.25); }
   .tag.live { background: rgba(34,197,94,0.16); color: #4ade80; }
 
   .error-box { background: rgba(255,90,90,0.12); color: #ff9b9b; border: 1px solid rgba(255,90,90,0.3); }
-  .yt-btn { background: #262a3a; color: var(--text); }
+  .yt-pill { background: #262a3a; color: var(--text); }
   .dot.scheduled, .dot.cancelled { background: #4a4f63; }
 }
