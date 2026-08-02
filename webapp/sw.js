@@ -1,4 +1,4 @@
-const CACHE_NAME = "lions-dashboard-v4";
+const CACHE_NAME = "lions-dashboard-v5";
 const SHELL = [
   "./",
   "./index.html",
@@ -32,8 +32,11 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   if (event.request.method !== "GET") return;
 
+  // fetch()가 브라우저 HTTP 캐시(GitHub Pages의 Cache-Control max-age)를 그대로
+  // 따르면 "네트워크 우선"이라 해도 실제로는 낡은 응답을 받을 수 있어, cache:
+  // "no-store"로 매 요청을 진짜 네트워크까지 보낸다.
   event.respondWith(
-    fetch(event.request)
+    fetch(event.request, { cache: "no-store" })
       .then((res) => {
         const copy = res.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
