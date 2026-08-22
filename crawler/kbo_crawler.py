@@ -5,8 +5,11 @@
   1) KBO 팀 순위 페이지를 읽어 standings 테이블 갱신
   2) 삼성 라이온즈 일정/결과 페이지를 읽어 games 테이블 갱신
      (오늘 경기가 있으면 이닝별 스코어보드 · 주자/아웃 등 진행 상황까지 함께 반영)
-  3) 경기가 끝나면 KBO 박스스코어 API에서 타자/투수 개인 기록을 읽어
-     game_player_stats 테이블에 자동 반영
+  3) 경기가 진행 중이거나 끝나면 KBO 박스스코어 API에서 타자/투수 개인 기록을 읽어
+     game_player_stats 테이블에 자동 반영 (진행 중에는 결승타 등 종료 확정 값은 제외)
+  4) 박스스코어에 처음 보는 이름이 나오면(콜업) KBO 선수 검색으로 즉시 프로필까지
+     채워 players 테이블에 자동 등록하고, 한동안(기본 20일) 출전이 없으면 비활성 처리
+     - 로스터를 한 번 등록해두고 방치하지 않고 실제 출전 기록 기준으로 계속 최신화
 
 주의:
   - KBO/삼성 라이온즈는 공식 오픈 API를 제공하지 않아 HTML/내부 AJAX 응답을 직접 파싱합니다.
@@ -76,6 +79,9 @@ WS_SCOREBOARD_URL = "https://www.koreabaseball.com/ws/Schedule.asmx/GetScoreBoar
 WS_BOXSCORE_URL = "https://www.koreabaseball.com/ws/Schedule.asmx/GetBoxScoreScroll"
 HITTER_DETAIL_URL = "https://www.koreabaseball.com/Record/Player/HitterDetail/Basic.aspx?playerId={}"
 PITCHER_DETAIL_URL = "https://www.koreabaseball.com/Record/Player/PitcherDetail/Basic.aspx?playerId={}"
+CONTROLS_SEARCH_URL = "https://www.koreabaseball.com/ws/Controls.asmx/GetSearchPlayer"
+POS_NO_TO_GROUP = {"투수": "pitcher", "포수": "catcher", "내야수": "infield", "외야수": "outfield"}
+ROSTER_INACTIVE_AFTER_DAYS = 20  # 이 기간 동안 박스스코어에 안 나오면 1군에서 빠진 것으로 간주
 LEAGUE_ID = "1"   # 정규시즌
 SERIES_ID = "0"
 
@@ -669,23 +675,142 @@ def crawl_schedule_and_results():
         saved = sb_upsert("games", [row], on_conflict="game_date,opponent", return_rows=True)
         game_row_id = saved[0]["id"] if saved else None
 
-        if game_row_id and status == "finished" and kbo_game_id:
-            crawl_boxscore(kbo_game_id, today.year, game_row_id, is_home)
+        if game_row_id and status in ("live", "finished") and kbo_game_id:
+            crawl_boxscore(kbo_game_id, today.year, game_row_id, is_home, finished=(status == "finished"))
 
     except Exception as e:
         log(f"  ! 일정/결과 수집 실패: {e}")
 
 
 # ---------------------------------------------------------------------------
+# 2-3) 선수단 자동 동기화 - 박스스코어에 새 이름이 나타나면(콜업) 즉시 등록하고,
+#      한동안 안 나타나면(말소) 비활성 처리해 로스터를 최신 상태로 유지한다.
+#      한 번 등록해두고 방치되던 방식 대신, 실제 출전 기록을 근거로 자동 반영한다.
+# ---------------------------------------------------------------------------
+def search_kbo_player(name, team_code=None):
+    """이름으로 KBO 전체 선수 검색 (콜업 등으로 처음 보는 선수의 ID/포지션을 즉시 찾기 위함).
+    동명이인은 team_code로 걸러낸다 (예: 삼성 소속만)."""
+    try:
+        headers = dict(HEADERS_WS)
+        headers["Referer"] = "https://www.koreabaseball.com/Player/Search.aspx"
+        r = requests.post(CONTROLS_SEARCH_URL, headers=headers, data={"name": name}, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        if str(data.get("code")) != "100":
+            return None
+        candidates = data.get("now") or []
+        if team_code:
+            candidates = [c for c in candidates if c.get("T_ID") == team_code]
+        return candidates[0] if candidates else None
+    except Exception as e:
+        log(f"  ! KBO 선수 검색 실패 ({name}): {e}")
+        return None
+
+
+def fetch_player_profile(kbo_player_id, is_pitcher):
+    url = (PITCHER_DETAIL_URL if is_pitcher else HITTER_DETAIL_URL).format(kbo_player_id)
+    res = requests.get(url, headers=HEADERS_WEB, timeout=15)
+    res.raise_for_status()
+    soup = BeautifulSoup(res.text, "html.parser")
+    prefix = "cphContents_cphContents_cphContents_playerProfile_"
+
+    def txt(suffix):
+        el = soup.select_one(f"#{prefix}{suffix}")
+        return el.get_text(strip=True) if el else None
+
+    birth_date = None
+    birthday_raw = txt("lblBirthday")  # "1993년 02월 12일"
+    if birthday_raw:
+        m = re.match(r"(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일", birthday_raw)
+        if m:
+            birth_date = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+
+    photo_url = None
+    img = soup.select_one(f"#{prefix}imgProgile")
+    if img and img.get("src"):
+        src = img["src"]
+        photo_url = ("https:" + src) if src.startswith("//") else src
+
+    return {
+        "birth_date": birth_date,
+        "career": txt("lblCareer"),
+        "salary_display": txt("lblSalary"),
+        "photo_url": photo_url,
+    }
+
+
+_known_player_cache = {}  # 같은 실행 안에서 같은 이름을 중복 조회하지 않기 위한 캐시
+
+
+def ensure_player_registered(player_name, game_date):
+    if player_name in _known_player_cache:
+        return
+    _known_player_cache[player_name] = True
+
+    existing = sb_select("players", f"select=id,is_active&name=eq.{requests.utils.quote(player_name)}")
+    if existing:
+        p = existing[0]
+        fields = {"last_played_date": game_date}
+        if not p.get("is_active"):
+            fields["is_active"] = True
+            log(f"  + {player_name} 1군 재등록 확인 (최근 출전)")
+        sb_update("players", p["id"], fields)
+        return
+
+    found = search_kbo_player(player_name, team_code=TEAM_CODE_MAP[OUR_TEAM_ABBR])
+    if not found:
+        sb_upsert("players", [{
+            "name": player_name, "position_group": "infield",
+            "is_active": True, "last_played_date": game_date,
+        }], on_conflict="name")
+        log(f"  + 신규 선수 '{player_name}' 등록 (KBO 검색 실패 - 기본 정보만)")
+        return
+
+    is_pitcher = "PitcherDetail" in (found.get("P_LINK") or "")
+    row = {
+        "name": player_name,
+        "back_number": int(found["BACK_NO"]) if str(found.get("BACK_NO")).isdigit() else None,
+        "position_group": POS_NO_TO_GROUP.get(found.get("POS_NO"), "infield"),
+        "throws_bats": found.get("P_TYPE"),
+        "kbo_player_id": str(found.get("P_ID")),
+        "is_active": True,
+        "last_played_date": game_date,
+    }
+    try:
+        profile = fetch_player_profile(found["P_ID"], is_pitcher)
+        row.update({k: v for k, v in profile.items() if v})
+    except Exception as e:
+        log(f"  ! {player_name} 프로필 조회 실패: {e}")
+
+    sb_upsert("players", [row], on_conflict="name")
+    log(f"  + 신규 선수(콜업) 자동 등록: {player_name} #{row.get('back_number')}")
+
+
+def deactivate_stale_players():
+    """최근 N일간 박스스코어에 한 번도 안 나온 선수는 1군에서 빠진 것으로 보고 비활성 처리."""
+    cutoff = (datetime.date.today() - datetime.timedelta(days=ROSTER_INACTIVE_AFTER_DAYS)).isoformat()
+    stale = sb_select(
+        "players",
+        f"select=id,name&is_active=eq.true&or=(last_played_date.lt.{cutoff},last_played_date.is.null)",
+    )
+    for p in stale:
+        sb_update("players", p["id"], {"is_active": False})
+    if stale:
+        log(f"  - 선수단 비활성 처리 {len(stale)}명 (최근 {ROSTER_INACTIVE_AFTER_DAYS}일간 출전 없음): "
+            + ", ".join(p["name"] for p in stale))
+
+
+# ---------------------------------------------------------------------------
 # 3) 경기 종료 후 선수별 기록(박스스코어) 자동 수집 - 삼성 선수만
 # ---------------------------------------------------------------------------
-def crawl_boxscore(kbo_game_id, gyear, game_row_id, is_home=None):
-    log("  선수별 기록(박스스코어) 수집 시작")
+def crawl_boxscore(kbo_game_id, gyear, game_row_id, is_home=None, finished=True):
+    log("  선수별 기록(박스스코어) 수집 시작" + ("" if finished else " (경기 진행 중 - 실시간)"))
     data = kbo_ws_post(WS_BOXSCORE_URL, kbo_game_id, gyear)
     if not data:
         log("  ! 박스스코어 조회 실패")
         return
 
+    game_date = f"{kbo_game_id[:4]}-{kbo_game_id[4:6]}-{kbo_game_id[6:8]}"
     rows_out = []
     sort_order = 1
 
@@ -708,6 +833,7 @@ def crawl_boxscore(kbo_game_id, gyear, game_row_id, is_home=None):
             position = name_row[1].strip()
             if not player_name:
                 continue
+            ensure_player_registered(player_name, game_date)
             ab, h, rbi, r = stat_row[0], stat_row[1], stat_row[2], stat_row[3]
             rows_out.append({
                 "game_id": game_row_id,
@@ -728,6 +854,7 @@ def crawl_boxscore(kbo_game_id, gyear, game_row_id, is_home=None):
             innings, so, er = r[6], r[13], r[15]
             if not name:
                 continue
+            ensure_player_registered(name, game_date)
             if decision and decision not in ("&nbsp;", ""):
                 label = decision
             elif appearance == "선발":
@@ -746,15 +873,17 @@ def crawl_boxscore(kbo_game_id, gyear, game_row_id, is_home=None):
 
     sb_upsert("game_player_stats", rows_out, on_conflict="game_id,sort_order")
 
-    # 결승타를 "오늘의 수훈선수" 표시용으로 games.highlight_note에 기록
-    etc_rows = grid_rows(data.get("tableEtc"))
-    highlight = None
-    for r in etc_rows:
-        if len(r) >= 2 and "결승타" in (r[0] or ""):
-            highlight = r[1].strip()
-            break
-    if highlight:
-        sb_update("games", game_row_id, {"highlight_note": highlight})
+    # 결승타는 경기가 끝나야 확정되는 값이라, 진행 중인 경기에서 잘못된(또는 아직
+    # 비어있는) 값을 잘못 반영하지 않도록 경기 종료 때만 기록한다.
+    if finished:
+        etc_rows = grid_rows(data.get("tableEtc"))
+        highlight = None
+        for r in etc_rows:
+            if len(r) >= 2 and "결승타" in (r[0] or ""):
+                highlight = r[1].strip()
+                break
+        if highlight:
+            sb_update("games", game_row_id, {"highlight_note": highlight})
 
 
 # ---------------------------------------------------------------------------
@@ -966,6 +1095,7 @@ def main():
         crawl_full_schedule()
         crawl_full_other_games()
         crawl_season_stats()
+        deactivate_stale_players()
     log("완료")
 
 

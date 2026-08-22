@@ -383,8 +383,11 @@
 
   // ---------------------------------------------------------------- roster
   function renderRoster() {
+    // 최근 출전 기록이 없어 비활성 처리된 선수(말소 등)는 기본 로스터에서 숨긴다 -
+    // 콜업/말소가 있어도 항상 "지금 뛰고 있는 선수단"만 보이게 하기 위함.
     var groups = {};
-    DATA.players.forEach(function (p) { (groups[p.position_group] = groups[p.position_group] || []).push(p); });
+    DATA.players.filter(function (p) { return p.is_active !== false; })
+      .forEach(function (p) { (groups[p.position_group] = groups[p.position_group] || []).push(p); });
 
     var html = POSITION_ORDER.filter(function (k) { return groups[k]; }).map(function (key) {
       var players = groups[key].sort(function (a, b) { return (a.back_number || 99) - (b.back_number || 99); });
