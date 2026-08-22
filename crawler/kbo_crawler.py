@@ -468,6 +468,16 @@ def crawl_full_schedule():
 
         rows_out.append(row)
 
+    # PostgREST(Supabase)는 upsert 배열의 모든 객체가 동일한 키 집합을
+    # 가져야 한다 (하나라도 다르면 PGRST102 "All object keys must match"
+    # 에러로 배치 전체가 거부된다). cancelled/finished/scheduled 상태마다
+    # 채워지는 필드가 달라서, 여기서 전체 컬럼의 합집합을 구해 없는 값은
+    # None으로 채워 모든 행의 키를 통일시킨다.
+    all_keys = set()
+    for row in rows_out:
+        all_keys.update(row.keys())
+    rows_out = [{k: row.get(k) for k in all_keys} for row in rows_out]
+
     # 스캔한 날짜 구간 전체(경기가 없는 휴식일 포함)의 기존 행을 지우고 새로 채워 넣는다.
     # 매치된 날짜만 지우면, 실제로는 경기가 없어졌는데 예전에 잘못 저장된 행이
     # 계속 남아있는 문제가 생긴다 (예: 원래 있던 mock 데이터의 휴식일 오류).
